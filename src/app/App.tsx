@@ -11,55 +11,106 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // --- State for Planning Phase ---
+  const [usePlan, setUsePlan] = useState(true); // Default to true
+  const [plan, setPlan] = useState('');
+  const [planLoading, setPlanLoading] = useState(false);
+  const [currentState, setCurrentState] = useState("Prompt"); // "Prompt" or "Plan"
+
   const handleGenerate = async () => {
-    if (!prompt.trim() || !apiKey.trim()) {
+    if ((currentState === "Prompt" && !prompt.trim()) || !apiKey.trim()) {
       setError('Please enter a prompt and your Gemini API key.');
       return;
     }
     
     setIsGenerating(true);
     setError(null);
-    setGeneratedCode('');
+    if (currentState === "Prompt") {
+        setGeneratedCode('');
+    }
 
     try {
-      // 1. Initialize the Google AI client with the user's key
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-      // 2. Create a detailed prompt for the Gemini model
-    const generationPrompt = `
-    You are an expert web developer. Your primary goal is to generate JSON code for a single-page website based on a user's request.
+      // --- STEP 1: GENERATE PLAN (if enabled) ---
+      if (usePlan && currentState === "Prompt") {
+        setPlanLoading(true);
+        const planningPrompt = `
 
-    // --- Forceful first instruction ---
-    Your FIRST AND MOST IMPORTANT task is to analyze the user's request to determine if it is a valid request to build a website.
+        You are a Solutions Architect for a web development agency. Your task is to take a user's request and break it down into a structured, hierarchical plan for a single-page website.
 
-    // --- The "IF NOT" condition ---
-    If the user's request is NOT about designing or building a website, app, or webpage, you MUST STOP. Ignore all other instructions and return only the following JSON object and nothing else:
-    \`\`\`json
-    {
+        If the request is NOT about designing a website, app, or webpage, you MUST STOP and return only this text:
         "error": "The provided prompt is not related to website development."
-    }
-    \`\`\`
 
-    // --- The "IF YES" condition ---
-    ONLY if the request IS a valid request to build a website should you proceed. In that case, you will return a single JSON object with the following keys:
-    - "title": A creative string for the website's <title> tag.
-    - "html": A string containing the HTML content for the <body> tag.
-    - "css": A string containing all necessary CSS code.
-    - "javascript": A string containing any necessary JavaScript.
+        If it IS a valid request, create a human-readable plan using Markdown formatting. The plan should be organized into the following sections, separated by horizontal lines:
 
-    // --- Explicit negative constraint ---
-    Under no circumstances should you create a website based on an off-topic request (e.g., if the user asks for a recipe, do not create a recipe website). Your only job in that case is to return the error JSON.
+        Overall Theme: A main heading for the theme. Under it, use a bulleted list to describe the Color Palette, Font, and Overall Look.
 
-    **User's Request:**
-    "${prompt}"
-    `;
+        Website Layout: A main heading for the layout. Under it, use a numbered list to show the exact order of the main sections (e.g., 1. Header, 2. Hero, 3. Features, 4. Footer).
+
+        Component Breakdown: A main heading for the components. Under it, create a subheading for each section from the Website Layout list. For each component, provide a Description and a bulleted list of its key Elements.
+
+        Use bolding for labels to make the document easy to scan.
+
+        User's Request:
+        "${prompt}"
+
+        Return the text output in a formated form with paragaphs and proper punctuation.
+        `;
+        
+        const result = await model.generateContent(planningPrompt);
+        const textResponse = result.response.text();
+        // const jsonMatch = textResponse.match(/```json\s*([\s\S]*?)\s*```/);
+
+        // if (!jsonMatch || !jsonMatch[1]) {
+        //     throw new Error("The AI did not return a valid plan in JSON format.");
+        // }
+        
+        // const parsedPlan = JSON.parse(jsonMatch[1]);
+        // if (parsedPlan.error) {
+        //     throw new Error(parsedPlan.error);
+        // }
+
+        setPlan(textResponse);
+        setCurrentState("Plan");
+        setPlanLoading(false);
+        setIsGenerating(false);
+        return; // Stop to allow user editing
+      }
+
+      // --- STEP 2: GENERATE CODE (from plan or prompt) ---
+      let finalGenerationPrompt = '';
+
+      if (usePlan && currentState === "Plan") {
+        finalGenerationPrompt = `
+        You are an expert web developer. Your task is to generate a complete, single-page website as a single JSON object based on the provided website plan.
+        The final JSON object must have these keys: "title", "html", "css", and "javascript".
+        For any images use https://placehold.co/WIDTHxHEIGHT with the width and height value filled out.
+        
+        **Website Plan:**
+        \`\`\`json
+        ${plan} 
+        \`\`\`
+        `;
+      } else {
+        finalGenerationPrompt = `
+        You are an expert web developer. Your primary goal is to generate JSON code for a single-page website based on a user's request.
+        // ... (rest of your original prompt instructions)
+        ONLY if the request IS a valid request to build a website should you proceed. In that case, you will return a single JSON object with the following keys:
+        - "title": A creative string for the website's <title> tag.
+        - "html": A string containing the HTML content for the <body> tag. For any images use https://placehold.co/WIDTHxHEIGHT with the width and height value filled out.
+        - "css": A string containing all necessary CSS code.
+        - "javascript": A string containing any necessary JavaScript.
+
+        **User's Request:**
+        "${prompt}"
+        `;
+      }
       
-      // 3. Call the API
-      const result = await model.generateContent(generationPrompt);
+      const result = await model.generateContent(finalGenerationPrompt);
       const textResponse = result.response.text();
 
-      // 4. Parse the JSON response from the model
       const jsonMatch = textResponse.match(/```json\s*([\s\S]*?)\s*```/);
       if (!jsonMatch || !jsonMatch[1]) {
         throw new Error("The AI response was not in the expected JSON format.");
@@ -68,15 +119,10 @@ function App() {
       const parsedValue = JSON.parse(jsonMatch[1]);
       if (parsedValue.error) {
         throw new Error(parsedValue.error);
-        console.log("This is not a valid prompt");
       }
-
-    //   if()
       
-      const parsedResponse = JSON.parse(jsonMatch[1]);
-      const { title, html, css, javascript } = parsedResponse;
+      const { title, html, css, javascript } = parsedValue;
 
-      // 5. Assemble the final HTML document
       const completeHTML = `
         <!DOCTYPE html>
         <html lang="en">
@@ -93,13 +139,15 @@ function App() {
         </html>`;
       
       setGeneratedCode(completeHTML);
+      setCurrentState("Prompt"); // Reset for the next run
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Generation failed: ${errorMessage}`);
-      console.error(err);
+      setCurrentState("Prompt"); // Reset on error
     } finally {
       setIsGenerating(false);
+      setPlanLoading(false);
     }
   };
 
@@ -109,7 +157,6 @@ function App() {
     }
   };
 
-  //Function to open the preview in a new tab
   const handleFullScreenPreview = () => {
     if (!generatedCode) return;
     const blob = new Blob([generatedCode], { type: 'text/html' });
@@ -119,7 +166,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
@@ -132,8 +178,6 @@ function App() {
                 <p className="text-sm text-gray-600">Using Gemini APIs</p>
               </div>
             </div>
-
-             {/* API Key Input */}
             <div className="relative w-full max-w-sm">
                 <Key className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
                 <input
@@ -148,25 +192,52 @@ function App() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-[calc(100vh-200px)]">
-             {/* Input Section */}
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 flex flex-col">
                 <div className="p-6 border-b border-gray-100">
-                    <h2 className="text-lg font-semibold text-gray-900">Describe Your Website</h2>
+                    <h2 className="text-lg font-semibold text-gray-900">
+                      {currentState === "Prompt" ? "Describe Your Website" : "Review & Edit the Plan"}
+                    </h2>
                     <p className="text-sm text-gray-600 mt-1">
-                        Enter your prompt and API key to create a beautiful one page website.
+                        {currentState === "Prompt" 
+                          ? "Enter your prompt and API key to create a beautiful one page website."
+                          : "Edit the JSON plan below, then generate the final site."}
                     </p>
                 </div>
                 <div className="flex-1 p-6 flex flex-col">
                     <textarea
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
+                        value={currentState === 'Prompt' ? prompt : plan}
+                        onChange={(e) => {
+                            if (currentState === 'Prompt') {
+                                setPrompt(e.target.value);
+                            } else {
+                                setPlan(e.target.value);
+                            }
+                        }}
                         onKeyDown={handleKeyPress}
-                        placeholder="e.g., 'A modern SaaS landing page with a gradient hero, three feature cards, and a newsletter signup form...'"
+                        placeholder={
+                            currentState === 'Prompt' 
+                            ? "e.g., 'A modern SaaS landing page with a gradient hero, three feature cards, and a newsletter signup form...'" 
+                            : "You can now edit the generated plan..."
+                        }
                         className="flex-1 w-full resize-none border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                    <div className="mt-4 flex items-center justify-between rounded-lg bg-gray-50 p-3 border border-gray-200">
+                        <div className="flex flex-col">
+                            <label htmlFor="planning-toggle" className="text-sm font-medium text-gray-900">
+                                 Use AI Planning Phase: 
+                            </label>
+                            <p className="text-s text-gray-500">Get a more accurate site with a 2-step process.</p>
+                        </div>
+                        <button
+                            type="button" id="planning-toggle" onClick={() => setUsePlan(!usePlan)}
+                            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 ${usePlan ? 'bg-blue-600' : 'bg-gray-200'}`}
+                            role="switch" aria-checked={usePlan}
+                        >
+                            <span aria-hidden="true" className={`inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${usePlan ? 'translate-x-5' : 'translate-x-0'}`}/>
+                        </button>
+                    </div>
                      {error && (
                         <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
                             <p className="text-sm text-red-700">{error}</p>
@@ -175,18 +246,18 @@ function App() {
                     <div className="mt-6">
                         <button
                             onClick={handleGenerate}
-                            disabled={!prompt.trim() || !apiKey.trim() || isGenerating}
+                            disabled={!apiKey.trim() || isGenerating || planLoading}
                             className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:bg-gray-300 disabled:from-gray-300 disabled:cursor-not-allowed text-white font-medium py-3 px-6 rounded-lg transition-all flex items-center justify-center space-x-2"
                         >
-                            {isGenerating ? (
+                            {isGenerating || planLoading ? (
                                 <>
                                     <Loader2 className="h-5 w-5 animate-spin" />
-                                    <span>Working on it...</span>
+                                    <span>{planLoading ? 'Creating Plan...' : 'Working on it...'}</span>
                                 </>
                             ) : (
                                 <>
                                     <Zap className="h-5 w-5" />
-                                    <span>Generate with AI</span>
+                                    <span>{usePlan && currentState === 'Prompt' ? 'Generate Plan' : 'Generate with AI'}</span>
                                 </>
                             )}
                         </button>
@@ -194,15 +265,12 @@ function App() {
                 </div>
             </div>
 
-            {/* Preview Section */}
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 flex flex-col">
                 <div className="p-6 border-b flex justify-between items-center">
                     <div className="flex items-center space-x-2">
                       <Eye className="h-5 w-5 text-emerald-600" />
                       <h2 className="text-lg font-semibold text-gray-900">Live Preview</h2>
                     </div>
-                    
-                    {/* --- NEW --- Button to open preview in a new tab */}
                     <button
                       onClick={handleFullScreenPreview}
                       disabled={!generatedCode}
@@ -215,7 +283,7 @@ function App() {
                 </div>
                 <div className="flex-1 p-6">
                     <div className="w-full h-full rounded-lg border-2 border-dashed border-gray-200 relative overflow-hidden">
-                        {isGenerating ? (
+                        {isGenerating || planLoading ? (
                             <div className="absolute inset-0 flex items-center justify-center bg-gray-50">
                                 <div className="text-center">
                                     <Loader2 className="h-12 w-12 text-blue-600 animate-spin mx-auto mb-4" />
